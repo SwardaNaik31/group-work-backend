@@ -7,15 +7,42 @@ router.use(authenticateToken);
 
 /**
  * GET /api/meetings
- * Returns meetings with creator information.
- * Filters by group_id ('personal' or integer ID) if provided.
+ * Meetings are strictly for GROUPS.
+ * Returns meetings only when a valid group_id is provided.
  */
 router.get('/', async (req, res, next) => {
   try {
     const { group_id } = req.query;
     const currentUserId = req.user.id;
 
-    let query = `
+    // Single users have no meetings - meetings are strictly for groups
+    if (!group_id || group_id === 'personal' || parseInt(group_id, 10) === 0) {
+      return res.status(200).json({
+        success: true,
+        count: 0,
+        upcoming_count: 0,
+        past_count: 0,
+        upcoming_meetings: [],
+        past_meetings: [],
+        meetings: []
+      });
+    }
+
+    const parsedGroupId = parseInt(group_id, 10);
+    // Verify membership
+    const [membership] = await pool.query(
+      'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
+      [parsedGroupId, currentUserId]
+    );
+
+    if (membership.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not a member of this group.'
+      });
+    }
+
+    const query = `
       SELECT 
         m.id,
         m.created_by,
@@ -34,42 +61,12 @@ router.get('/', async (req, res, next) => {
         g.name AS group_name
       FROM meetings m
       JOIN users u ON m.created_by = u.id
-      LEFT JOIN \`groups\` g ON m.group_id = g.id
-      WHERE 1=1
+      JOIN \`groups\` g ON m.group_id = g.id
+      WHERE m.group_id = ?
+      ORDER BY m.meeting_date ASC, m.meeting_time ASC
     `;
-    const params = [];
 
-    if (group_id !== undefined && group_id !== null && group_id !== '') {
-      if (group_id === 'personal' || parseInt(group_id, 10) === 0) {
-        query += ' AND m.group_id IS NULL AND m.created_by = ?';
-        params.push(currentUserId);
-      } else {
-        const parsedGroupId = parseInt(group_id, 10);
-        const [membership] = await pool.query(
-          'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
-          [parsedGroupId, currentUserId]
-        );
-        if (membership.length === 0) {
-          return res.status(403).json({
-            success: false,
-            message: 'You are not a member of this group.'
-          });
-        }
-        query += ' AND m.group_id = ?';
-        params.push(parsedGroupId);
-      }
-    } else {
-      // Default: show personal meetings + meetings for groups user belongs to
-      query += ` AND (
-        (m.group_id IS NULL AND m.created_by = ?)
-        OR m.group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)
-      )`;
-      params.push(currentUserId, currentUserId);
-    }
-
-    query += ' ORDER BY m.meeting_date ASC, m.meeting_time ASC';
-
-    const [rows] = await pool.query(query, params);
+    const [rows] = await pool.query(query, [parsedGroupId]);
 
     const now = new Date();
     const upcoming = [];
@@ -143,7 +140,7 @@ router.get('/:id', async (req, res, next) => {
         g.name AS group_name
       FROM meetings m
       JOIN users u ON m.created_by = u.id
-      LEFT JOIN \`groups\` g ON m.group_id = g.id
+      JOIN \`groups\` g ON m.group_id = g.id
       WHERE m.id = ?`,
       [meetingId]
     );
@@ -163,6 +160,7 @@ router.get('/:id', async (req, res, next) => {
 
 /**
  * POST /api/meetings
+ * Strictly requires group_id (meetings are only for groups).
  */
 router.post('/', async (req, res, next) => {
   try {
@@ -180,6 +178,26 @@ router.post('/', async (req, res, next) => {
     } = req.body;
 
     const currentUserId = req.user.id;
+
+    if (!group_id || parseInt(group_id, 10) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Meetings are only available for groups. Please select a group.'
+      });
+    }
+
+    const targetGroupId = parseInt(group_id, 10);
+    const [membership] = await pool.query(
+      'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
+      [targetGroupId, currentUserId]
+    );
+
+    if (membership.length === 0) {
+      return res.status(403).json({
+        success: false,
+        message: 'You are not a member of this group.'
+      });
+    }
 
     if (!title || !title.trim()) {
       return res.status(400).json({
@@ -202,21 +220,6 @@ router.post('/', async (req, res, next) => {
         success: false,
         message: 'Meeting time (HH:mm) is required.'
       });
-    }
-
-    let targetGroupId = null;
-    if (group_id && parseInt(group_id, 10) > 0) {
-      targetGroupId = parseInt(group_id, 10);
-      const [membership] = await pool.query(
-        'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
-        [targetGroupId, currentUserId]
-      );
-      if (membership.length === 0) {
-        return res.status(403).json({
-          success: false,
-          message: 'You are not a member of this group.'
-        });
-      }
     }
 
     const cleanAgenda = (agenda || description || '').trim() || null;
@@ -249,14 +252,14 @@ router.post('/', async (req, res, next) => {
         g.name AS group_name
       FROM meetings m
       JOIN users u ON m.created_by = u.id
-      LEFT JOIN \`groups\` g ON m.group_id = g.id
+      JOIN \`groups\` g ON m.group_id = g.id
       WHERE m.id = ?`,
       [newMeetingId]
     );
 
     return res.status(201).json({
       success: true,
-      message: 'Meeting scheduled successfully.',
+      message: 'Group meeting scheduled successfully.',
       meeting: rows[0]
     });
   } catch (error) {
@@ -348,9 +351,11 @@ router.put('/:id', async (req, res, next) => {
         m.updated_at,
         u.full_name AS creator_name,
         u.email AS creator_email,
-        u.avatar_color AS creator_avatar
+        u.avatar_color AS creator_avatar,
+        g.name AS group_name
       FROM meetings m
       JOIN users u ON m.created_by = u.id
+      JOIN \`groups\` g ON m.group_id = g.id
       WHERE m.id = ?`,
       [meetingId]
     );

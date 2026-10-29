@@ -15,10 +15,28 @@ function getTodayString() {
 
 /**
  * GET /api/team
- * Returns all registered members of the shared group
+ * Returns registered members.
+ * If group_id is specified: returns members of that group.
+ * Otherwise returns members of groups the user belongs to (or directory).
  */
 router.get('/', async (req, res, next) => {
   try {
+    const { group_id } = req.query;
+    const currentUserId = req.user.id;
+
+    if (group_id && parseInt(group_id, 10) > 0) {
+      const parsedGroupId = parseInt(group_id, 10);
+      const [members] = await pool.query(
+        `SELECT u.id, u.full_name, u.email, u.avatar_color, gm.role, gm.created_at 
+         FROM group_members gm
+         JOIN users u ON gm.user_id = u.id
+         WHERE gm.group_id = ?
+         ORDER BY gm.role = 'Admin' DESC, u.full_name ASC`,
+        [parsedGroupId]
+      );
+      return res.status(200).json({ success: true, count: members.length, members });
+    }
+
     const [members] = await pool.query(
       `SELECT id, full_name, email, avatar_color, created_at 
        FROM users 
@@ -37,75 +55,112 @@ router.get('/', async (req, res, next) => {
 
 /**
  * GET /api/team/summary
- * Query params: ?date=YYYY-MM-DD
- * Returns detailed task breakdown for each team member on the specified date
+ * Query params: ?date=YYYY-MM-DD&group_id=...
+ * If group_id is provided: calculates stats for that group.
+ * If group_id === 'personal' or not provided: calculates personal stats for current user only.
  */
 router.get('/summary', async (req, res, next) => {
   try {
     const targetDate = req.query.date && req.query.date.trim() ? req.query.date.trim() : getTodayString();
+    const { group_id } = req.query;
+    const currentUserId = req.user.id;
 
-    // Query all members with aggregate counts for the specific date
-    const query = `
-      SELECT 
-        u.id,
-        u.full_name,
-        u.email,
-        u.avatar_color,
-        u.created_at,
-        COUNT(t.id) AS total_tasks,
-        SUM(CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END) AS completed_tasks,
-        SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) AS in_progress_tasks,
-        SUM(CASE WHEN t.status = 'Pending' THEN 1 ELSE 0 END) AS pending_tasks
-      FROM users u
-      LEFT JOIN tasks t ON u.id = t.user_id AND t.task_date = ?
-      GROUP BY u.id, u.full_name, u.email, u.avatar_color, u.created_at
-      ORDER BY total_tasks DESC, u.full_name ASC
-    `;
+    const isGroup = group_id && group_id !== 'personal' && parseInt(group_id, 10) > 0;
+    const groupId = isGroup ? parseInt(group_id, 10) : null;
 
-    const [rows] = await pool.query(query, [targetDate]);
+    let query;
+    let params;
 
-    let groupTotal = 0;
-    let groupCompleted = 0;
-    let groupInProgress = 0;
-    let groupPending = 0;
+    if (isGroup) {
+      // Group mode: members of this specific group and their tasks in this group
+      query = `
+        SELECT 
+          u.id,
+          u.full_name,
+          u.email,
+          u.avatar_color,
+          u.created_at,
+          gm.role,
+          COUNT(t.id) AS total_tasks,
+          SUM(CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END) AS completed_tasks,
+          SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) AS in_progress_tasks,
+          SUM(CASE WHEN t.status = 'Pending' THEN 1 ELSE 0 END) AS pending_tasks
+        FROM group_members gm
+        JOIN users u ON gm.user_id = u.id
+        LEFT JOIN tasks t ON u.id = t.user_id AND t.task_date = ? AND t.group_id = ?
+        WHERE gm.group_id = ?
+        GROUP BY u.id, u.full_name, u.email, u.avatar_color, u.created_at, gm.role
+        ORDER BY completed_tasks DESC, total_tasks DESC, u.full_name ASC
+      `;
+      params = [targetDate, groupId, groupId];
+    } else {
+      // Personal mode: ONLY current user and their personal tasks
+      query = `
+        SELECT 
+          u.id,
+          u.full_name,
+          u.email,
+          u.avatar_color,
+          u.created_at,
+          'Solo' AS role,
+          COUNT(t.id) AS total_tasks,
+          SUM(CASE WHEN t.status = 'Completed' THEN 1 ELSE 0 END) AS completed_tasks,
+          SUM(CASE WHEN t.status = 'In Progress' THEN 1 ELSE 0 END) AS in_progress_tasks,
+          SUM(CASE WHEN t.status = 'Pending' THEN 1 ELSE 0 END) AS pending_tasks
+        FROM users u
+        LEFT JOIN tasks t ON u.id = t.user_id AND t.task_date = ? AND t.group_id IS NULL
+        WHERE u.id = ?
+        GROUP BY u.id, u.full_name, u.email, u.avatar_color, u.created_at
+      `;
+      params = [targetDate, currentUserId];
+    }
 
-    const memberStats = rows.map(row => {
-      const total = Number(row.total_tasks) || 0;
-      const completed = Number(row.completed_tasks) || 0;
-      const inProgress = Number(row.in_progress_tasks) || 0;
-      const pending = Number(row.pending_tasks) || 0;
+    const [rows] = await pool.query(query, params);
 
-      groupTotal += total;
-      groupCompleted += completed;
-      groupInProgress += inProgress;
-      groupPending += pending;
+    let totalGroupTasks = 0;
+    let completedGroupTasks = 0;
+    let inProgressGroupTasks = 0;
+    let pendingGroupTasks = 0;
 
-      const completionPercentage = total > 0 ? Math.round((completed / total) * 100) : 0;
+    const memberStats = rows.map(r => {
+      const tot = Number(r.total_tasks) || 0;
+      const comp = Number(r.completed_tasks) || 0;
+      const inProg = Number(r.in_progress_tasks) || 0;
+      const pend = Number(r.pending_tasks) || 0;
+      const pct = tot > 0 ? Math.round((comp / tot) * 100) : 0;
+
+      totalGroupTasks += tot;
+      completedGroupTasks += comp;
+      inProgressGroupTasks += inProg;
+      pendingGroupTasks += pend;
 
       return {
-        id: row.id,
-        full_name: row.full_name,
-        email: row.email,
-        avatar_color: row.avatar_color,
-        total_tasks: total,
-        completed_tasks: completed,
-        in_progress_tasks: inProgress,
-        pending_tasks: pending,
-        completion_percentage: completionPercentage
+        id: r.id,
+        fullName: r.full_name,
+        email: r.email,
+        avatarColor: r.avatar_color,
+        totalTasks: tot,
+        completedTasks: comp,
+        inProgressTasks: inProg,
+        pendingTasks: pend,
+        completionPercentage: pct
       };
     });
 
-    const groupCompletionPercentage = groupTotal > 0 ? Math.round((groupCompleted / groupTotal) * 100) : 0;
+    const overallPercentage = totalGroupTasks > 0
+      ? Math.round((completedGroupTasks / totalGroupTasks) * 100)
+      : 0;
 
     return res.status(200).json({
       success: true,
       date: targetDate,
+      mode: isGroup ? 'group' : 'personal',
       group_summary: {
-        total_tasks: groupTotal,
-        completed_tasks: groupCompleted,
-        in_progress_tasks: groupInProgress,
-        pending_tasks: groupPending,
-        completion_percentage: groupCompletionPercentage
+        total_tasks: totalGroupTasks,
+        completed_tasks: completedGroupTasks,
+        in_progress_tasks: inProgressGroupTasks,
+        pending_tasks: pendingGroupTasks,
+        completion_percentage: overallPercentage
       },
       members: memberStats
     });
