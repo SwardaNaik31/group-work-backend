@@ -76,6 +76,7 @@ app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/team', require('./routes/team'));
 app.use('/api/meetings', require('./routes/meetings'));
 app.use('/api/summary', require('./routes/summary'));
+app.use('/api/groups', require('./routes/groups'));
 
 // 404 Handler for undefined API routes
 app.use('/api/*', (req, res) => {
