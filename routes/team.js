@@ -37,10 +37,19 @@ router.get('/', async (req, res, next) => {
       return res.status(200).json({ success: true, count: members.length, members });
     }
 
+    // Default: ONLY return members who share at least one group with current user (plus current user)
     const [members] = await pool.query(
-      `SELECT id, full_name, email, avatar_color, created_at 
-       FROM users 
-       ORDER BY full_name ASC`
+      `SELECT DISTINCT u.id, u.full_name, u.email, u.avatar_color, u.created_at 
+       FROM users u
+       WHERE u.id = ? 
+          OR u.id IN (
+            SELECT gm2.user_id 
+            FROM group_members gm1
+            JOIN group_members gm2 ON gm1.group_id = gm2.group_id
+            WHERE gm1.user_id = ?
+          )
+       ORDER BY (u.id = ?) DESC, u.full_name ASC`,
+      [currentUserId, currentUserId, currentUserId]
     );
 
     return res.status(200).json({

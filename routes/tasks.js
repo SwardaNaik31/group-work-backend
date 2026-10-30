@@ -59,39 +59,43 @@ router.get('/', async (req, res, next) => {
 
     let targetGroupId = group_id;
 
-    // If no group_id explicitly specified, check if user belongs to a group
-    if (targetGroupId === undefined || targetGroupId === null || targetGroupId === '') {
-      const [userGroups] = await pool.query(
-        'SELECT group_id FROM group_members WHERE user_id = ? ORDER BY id ASC LIMIT 1',
-        [currentUserId]
-      );
-      if (userGroups.length > 0) {
-        targetGroupId = userGroups[0].group_id;
+    if (targetGroupId !== undefined && targetGroupId !== null && targetGroupId !== '' && targetGroupId !== 'all') {
+      if (targetGroupId === 'personal' || parseInt(targetGroupId, 10) === 0) {
+        // Personal tasks of current user ONLY
+        query += ' AND t.group_id IS NULL AND t.user_id = ?';
+        params.push(currentUserId);
       } else {
-        targetGroupId = 'personal';
+        const parsedGroupId = parseInt(targetGroupId, 10);
+        // Verify caller is a member of this group
+        const [membership] = await pool.query(
+          'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
+          [parsedGroupId, currentUserId]
+        );
+        if (membership.length === 0) {
+          return res.status(403).json({
+            success: false,
+            message: 'You are not a member of this group.'
+          });
+        }
+        // STRICT: Only tasks within this group created by members of this group
+        query += ' AND t.group_id = ? AND t.user_id IN (SELECT user_id FROM group_members WHERE group_id = ?)';
+        params.push(parsedGroupId, parsedGroupId);
       }
-    }
-
-    // Filter by group_id or personal
-    if (targetGroupId === 'personal' || parseInt(targetGroupId, 10) === 0) {
-      // Solo/Personal tasks only (for current user, not attached to any group)
-      query += ' AND t.group_id IS NULL AND t.user_id = ?';
-      params.push(currentUserId);
     } else {
-      const parsedGroupId = parseInt(targetGroupId, 10);
-      // Verify caller is a member of this group
-      const [membership] = await pool.query(
-        'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
-        [parsedGroupId, currentUserId]
-      );
-      if (membership.length === 0) {
-        return res.status(403).json({
-          success: false,
-          message: 'You are not a member of this group.'
-        });
-      }
-      query += ' AND t.group_id = ?';
-      params.push(parsedGroupId);
+      // Default: ONLY show tasks from people who share at least one group with current user (in those groups), OR current user's own tasks
+      query += ` AND (
+        (t.user_id = ?)
+        OR (
+          t.group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)
+          AND t.user_id IN (
+            SELECT gm2.user_id 
+            FROM group_members gm1 
+            JOIN group_members gm2 ON gm1.group_id = gm2.group_id 
+            WHERE gm1.user_id = ?
+          )
+        )
+      )`;
+      params.push(currentUserId, currentUserId, currentUserId);
     }
 
     if (date) {
