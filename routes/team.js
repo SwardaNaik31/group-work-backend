@@ -65,8 +65,19 @@ router.get('/summary', async (req, res, next) => {
     const { group_id } = req.query;
     const currentUserId = req.user.id;
 
-    const isGroup = group_id && group_id !== 'personal' && parseInt(group_id, 10) > 0;
-    const groupId = isGroup ? parseInt(group_id, 10) : null;
+    let isGroup = group_id && group_id !== 'personal' && parseInt(group_id, 10) > 0;
+    let groupId = isGroup ? parseInt(group_id, 10) : null;
+
+    if (!groupId && group_id !== 'personal') {
+      const [userGroups] = await pool.query(
+        'SELECT group_id FROM group_members WHERE user_id = ? ORDER BY id ASC LIMIT 1',
+        [currentUserId]
+      );
+      if (userGroups.length > 0) {
+        groupId = userGroups[0].group_id;
+        isGroup = true;
+      }
+    }
 
     let query;
     let params;

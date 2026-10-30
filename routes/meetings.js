@@ -15,8 +15,19 @@ router.get('/', async (req, res, next) => {
     const { group_id } = req.query;
     const currentUserId = req.user.id;
 
-    // Single users have no meetings - meetings are strictly for groups
-    if (!group_id || group_id === 'personal' || parseInt(group_id, 10) === 0) {
+    let targetGroupId = group_id ? parseInt(group_id, 10) : null;
+    if (!targetGroupId && group_id !== 'personal') {
+      const [userGroups] = await pool.query(
+        'SELECT group_id FROM group_members WHERE user_id = ? ORDER BY id ASC LIMIT 1',
+        [currentUserId]
+      );
+      if (userGroups.length > 0) {
+        targetGroupId = userGroups[0].group_id;
+      }
+    }
+
+    // Single users with no group have no meetings - meetings are strictly for groups
+    if (!targetGroupId || group_id === 'personal' || targetGroupId <= 0) {
       return res.status(200).json({
         success: true,
         count: 0,
@@ -28,7 +39,7 @@ router.get('/', async (req, res, next) => {
       });
     }
 
-    const parsedGroupId = parseInt(group_id, 10);
+    const parsedGroupId = targetGroupId;
     // Verify membership
     const [membership] = await pool.query(
       'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
@@ -179,14 +190,23 @@ router.post('/', async (req, res, next) => {
 
     const currentUserId = req.user.id;
 
-    if (!group_id || parseInt(group_id, 10) <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Meetings are only available for groups. Please select a group.'
-      });
+    let targetGroupId = group_id ? parseInt(group_id, 10) : null;
+    if (!targetGroupId) {
+      const [userGroups] = await pool.query(
+        'SELECT group_id FROM group_members WHERE user_id = ? ORDER BY id ASC LIMIT 1',
+        [currentUserId]
+      );
+      if (userGroups.length > 0) {
+        targetGroupId = userGroups[0].group_id;
+      }
     }
 
-    const targetGroupId = parseInt(group_id, 10);
+    if (!targetGroupId || targetGroupId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Meetings are only available for groups. Please join or create a group.'
+      });
+    }
     const [membership] = await pool.query(
       'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
       [targetGroupId, currentUserId]

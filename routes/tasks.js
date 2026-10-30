@@ -57,35 +57,41 @@ router.get('/', async (req, res, next) => {
     `;
     const params = [];
 
-    // Filter by group_id or personal
-    if (group_id !== undefined && group_id !== null && group_id !== '') {
-      if (group_id === 'personal' || parseInt(group_id, 10) === 0) {
-        // Personal tasks only (for current user, not attached to any group)
-        query += ' AND t.group_id IS NULL AND t.user_id = ?';
-        params.push(currentUserId);
+    let targetGroupId = group_id;
+
+    // If no group_id explicitly specified, check if user belongs to a group
+    if (targetGroupId === undefined || targetGroupId === null || targetGroupId === '') {
+      const [userGroups] = await pool.query(
+        'SELECT group_id FROM group_members WHERE user_id = ? ORDER BY id ASC LIMIT 1',
+        [currentUserId]
+      );
+      if (userGroups.length > 0) {
+        targetGroupId = userGroups[0].group_id;
       } else {
-        const parsedGroupId = parseInt(group_id, 10);
-        // Verify caller is a member of this group
-        const [membership] = await pool.query(
-          'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
-          [parsedGroupId, currentUserId]
-        );
-        if (membership.length === 0) {
-          return res.status(403).json({
-            success: false,
-            message: 'You are not a member of this group.'
-          });
-        }
-        query += ' AND t.group_id = ?';
-        params.push(parsedGroupId);
+        targetGroupId = 'personal';
       }
+    }
+
+    // Filter by group_id or personal
+    if (targetGroupId === 'personal' || parseInt(targetGroupId, 10) === 0) {
+      // Solo/Personal tasks only (for current user, not attached to any group)
+      query += ' AND t.group_id IS NULL AND t.user_id = ?';
+      params.push(currentUserId);
     } else {
-      // Default when no group_id specified: show personal tasks + tasks in groups the user is part of
-      query += ` AND (
-        (t.group_id IS NULL AND t.user_id = ?) 
-        OR t.group_id IN (SELECT group_id FROM group_members WHERE user_id = ?)
-      )`;
-      params.push(currentUserId, currentUserId);
+      const parsedGroupId = parseInt(targetGroupId, 10);
+      // Verify caller is a member of this group
+      const [membership] = await pool.query(
+        'SELECT role FROM group_members WHERE group_id = ? AND user_id = ?',
+        [parsedGroupId, currentUserId]
+      );
+      if (membership.length === 0) {
+        return res.status(403).json({
+          success: false,
+          message: 'You are not a member of this group.'
+        });
+      }
+      query += ' AND t.group_id = ?';
+      params.push(parsedGroupId);
     }
 
     if (date) {
@@ -218,6 +224,15 @@ router.post('/', async (req, res, next) => {
             message: 'The assigned user is not a member of this group.'
           });
         }
+      }
+    } else if (group_id !== 'personal') {
+      // Default to user's first group if user belongs to one
+      const [userGroups] = await pool.query(
+        'SELECT group_id FROM group_members WHERE user_id = ? ORDER BY id ASC LIMIT 1',
+        [currentUserId]
+      );
+      if (userGroups.length > 0) {
+        targetGroupId = userGroups[0].group_id;
       }
     }
 
