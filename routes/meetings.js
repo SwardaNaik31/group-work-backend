@@ -311,17 +311,18 @@ router.put('/:id', async (req, res, next) => {
     let canEdit = meeting.created_by === currentUserId;
 
     if (!canEdit && meeting.group_id) {
-      const [adminCheck] = await pool.query(
-        "SELECT role FROM group_members WHERE group_id = ? AND user_id = ? AND role = 'Admin'",
+      // Allow any group member to edit meetings in peer group
+      const [memberCheck] = await pool.query(
+        "SELECT id FROM group_members WHERE group_id = ? AND user_id = ?",
         [meeting.group_id, currentUserId]
       );
-      if (adminCheck.length > 0) canEdit = true;
+      if (memberCheck.length > 0) canEdit = true;
     }
 
     if (!canEdit) {
       return res.status(403).json({
         success: false,
-        message: 'Forbidden: Only the meeting creator or group admin can edit this meeting.'
+        message: 'Forbidden: Only the meeting creator or group members can edit this meeting.'
       });
     }
 
@@ -414,17 +415,18 @@ router.delete('/:id', async (req, res, next) => {
     let canDelete = meeting.created_by === currentUserId;
 
     if (!canDelete && meeting.group_id) {
-      const [adminCheck] = await pool.query(
-        "SELECT role FROM group_members WHERE group_id = ? AND user_id = ? AND role = 'Admin'",
+      // Allow any group member to delete meetings in peer group
+      const [memberCheck] = await pool.query(
+        "SELECT id FROM group_members WHERE group_id = ? AND user_id = ?",
         [meeting.group_id, currentUserId]
       );
-      if (adminCheck.length > 0) canDelete = true;
+      if (memberCheck.length > 0) canDelete = true;
     }
 
     if (!canDelete) {
       return res.status(403).json({
         success: false,
-        message: 'Forbidden: Only the creator or group admin can delete this meeting.'
+        message: 'Forbidden: Only the meeting creator or group members can delete this meeting.'
       });
     }
 

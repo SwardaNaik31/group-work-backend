@@ -25,7 +25,7 @@ router.get('/', async (req, res, next) => {
         g.created_at,
         g.updated_at,
         (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
-      FROM groups g
+      FROM `groups` g
       JOIN group_members gm ON g.id = gm.group_id
       JOIN users u ON g.created_by = u.id
       WHERE gm.user_id = ?
@@ -69,10 +69,10 @@ router.post('/', async (req, res, next) => {
     );
     const groupId = groupResult.insertId;
 
-    // 2. Add creator as Admin
+    // 2. Add creator as Member (peers, all members are equal)
     await connection.query(
       'INSERT INTO group_members (group_id, user_id, role) VALUES (?, ?, ?)',
-      [groupId, creatorId, 'Admin']
+      [groupId, creatorId, 'Member']
     );
 
     // 3. Process additional member emails if provided
@@ -103,7 +103,7 @@ router.post('/', async (req, res, next) => {
             [groupId, foundUser.id, 'Member']
           );
           addedMembers.push(foundUser.full_name);
-        } catch (_) {}
+        } catch (_) { }
       } else {
         notFoundEmails.push(email);
       }
@@ -119,7 +119,7 @@ router.post('/', async (req, res, next) => {
         g.description,
         g.created_by,
         u.full_name AS creator_name,
-        'Admin' AS role,
+        'Member' AS role,
         g.created_at,
         (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
       FROM \`groups\` g
