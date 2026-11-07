@@ -25,7 +25,7 @@ router.get('/', async (req, res, next) => {
         g.created_at,
         g.updated_at,
         (SELECT COUNT(*) FROM group_members WHERE group_id = g.id) AS member_count
-      FROM `groups` g
+      FROM \`groups\` g
       JOIN group_members gm ON g.id = gm.group_id
       JOIN users u ON g.created_by = u.id
       WHERE gm.user_id = ?
