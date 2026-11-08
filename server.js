@@ -101,12 +101,7 @@ app.use((err, req, res, next) => {
 });
 
 // Start Server & verify database connection
-async function startServer() {
-  const dbConnected = await testConnection();
-  if (!dbConnected) {
-    console.warn('[Warning] MySQL connection could not be established. Make sure XAMPP MySQL is running.');
-  }
-
+function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`====================================================`);
     console.log(`🚀 Group Work Management Backend Server`);
@@ -114,6 +109,11 @@ async function startServer() {
     console.log(`📱 Android Emulator URL:  http://10.0.2.2:${PORT}`);
     console.log(`🩺 Health Check:          http://localhost:${PORT}/api/health`);
     console.log(`====================================================`);
+
+    // Verify DB in background without blocking the HTTP listener
+    testConnection().catch(err => {
+      console.warn('[Warning] MySQL connection could not be established:', err.message);
+    });
   });
 }
 
